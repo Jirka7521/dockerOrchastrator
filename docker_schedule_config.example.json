@@ -1,0 +1,30 @@
+{
+  "schedule": {
+    "timezone": "Europe/Prague",
+    "hourly_minute": 0,
+    "daily_hour": 0,
+    "daily_minute": 0
+  },
+  "pipelines": {
+    "example": {
+      "sync": "exampleSync",
+      "hourly_snapshot": "exampleSnapshotHourly",
+      "daily_snapshot": "exampleSnapshotDaily"
+    },
+    "secondary": {
+      "sync": "secondarySync",
+      "hourly_snapshot": "secondarySnapshotHourly",
+      "daily_snapshot": "secondarySnapshotDaily"
+    }
+  },
+  "scheduled_containers": [
+    {
+      "name": "scheduled-maintenance",
+      "period": "daily"
+    },
+    {
+      "name": "wattwise-simulate-12h-1",
+      "period": "every_6_hours"
+    }
+  ]
+}

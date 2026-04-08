@@ -1,0 +1,2 @@
+# Ignore local runtime config so it is not published
+docker_schedule_config.json
