@@ -245,10 +245,31 @@ class DockerRunner:
         This prevents duplicate starts when an hourly tick arrives while a job is
         still active from a previous run.
         """
-        if self.is_running(container):
-            self.log.info("Container is already running, waiting: %s", container)
-        else:
-            self.start_container(container)
+        try:
+            if self.is_running(container):
+                self.log.info("Container is already running, waiting: %s", container)
+            else:
+                self.start_container(container)
+        except RuntimeError as exc:
+            # If the container cannot be inspected (commonly because it does
+            # not exist), try to create and run it from an image with the
+            # same name. This allows scheduled containers that are defined as
+            # images (rather than pre-created containers) to run the same way
+            # other containers do.
+            msg = str(exc)
+            if "No such object" in msg or "cannot be inspected" in msg:
+                self.log.info(
+                    "Container '%s' not found; attempting to create and run from image '%s'",
+                    container,
+                    container,
+                )
+                run_result = self._run(["docker", "run", "-d", "--name", container, container])
+                if run_result.returncode != 0:
+                    raise RuntimeError(
+                        f"Failed to run image '{container}' as container '{container}': {run_result.stderr.strip()}"
+                    )
+            else:
+                raise
 
         exit_code = self.wait_container(container)
         if exit_code != 0:
@@ -394,7 +415,13 @@ class Orchestrator:
                     future.result()
                     self.log.info("Task completed successfully: %s", task_name)
                 except Exception as exc:  # noqa: BLE001 - we re-raise with context
+                    # Log the failure. If the failed task is a scheduled container,
+                    # do not fail the entire orchestration run: scheduled containers
+                    # are optional and should not stop other pipelines.
                     self.log.error("Task failed: %s", task_name)
+                    if isinstance(task_name, str) and task_name.startswith("scheduled:"):
+                        self.log.exception("Scheduled task failed (continuing): %s", task_name)
+                        continue
                     raise RuntimeError(f"Task '{task_name}' failed: {exc}") from exc
 
         self.log.info("All pipelines and scheduled containers completed successfully.")
