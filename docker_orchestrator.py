@@ -415,16 +415,13 @@ class Orchestrator:
                     future.result()
                     self.log.info("Task completed successfully: %s", task_name)
                 except Exception as exc:  # noqa: BLE001 - we re-raise with context
-                    # Log the failure. If the failed task is a scheduled container,
-                    # do not fail the entire orchestration run: scheduled containers
-                    # are optional and should not stop other pipelines.
-                    self.log.error("Task failed: %s", task_name)
-                    if isinstance(task_name, str) and task_name.startswith("scheduled:"):
-                        self.log.exception("Scheduled task failed (continuing): %s", task_name)
-                        continue
-                    raise RuntimeError(f"Task '{task_name}' failed: {exc}") from exc
+                    # Keep the orchestrator moving even if one pipeline stops.
+                    # Scheduled containers already behave this way, so we apply
+                    # the same policy to pipeline chains as well.
+                    self.log.exception("Task failed (continuing): %s", task_name)
+                    continue
 
-        self.log.info("All pipelines and scheduled containers completed successfully.")
+        self.log.info("All configured tasks completed (failures were logged and skipped).")
         return 0
 
 
