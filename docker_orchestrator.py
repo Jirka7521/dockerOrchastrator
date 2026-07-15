@@ -314,7 +314,19 @@ class Orchestrator:
         On daily tick, hourly + daily snapshots are started in parallel.
         """
         self.log.info("[%s] Starting sync container: %s", pipeline.name, pipeline.sync)
-        self.runner.run_and_wait(pipeline.sync)
+        sync_error: Exception | None = None
+        try:
+            self.runner.run_and_wait(pipeline.sync)
+        except Exception as exc:  # noqa: BLE001 - re-raised with context after snapshots
+            # A failed sync must not prevent the snapshot from running: we still
+            # want an hourly (and daily) snapshot of whatever state currently
+            # exists on disk. Record the error and re-raise after snapshots run.
+            self.log.error(
+                "[%s] Sync failed, continuing to snapshot anyway: %s",
+                pipeline.name,
+                exc,
+            )
+            sync_error = exc
 
         snapshots = [pipeline.hourly_snapshot]
         if run_daily_snapshot:
@@ -334,6 +346,14 @@ class Orchestrator:
                 ", ".join(snapshots),
             )
             self.runner.run_parallel_and_wait(snapshots)
+
+        if sync_error is not None:
+            # Snapshots have now run; surface the earlier sync failure so the
+            # pipeline is still reported as failed for this cycle.
+            raise RuntimeError(
+                f"[{pipeline.name}] Sync container '{pipeline.sync}' failed "
+                f"(snapshot still ran): {sync_error}"
+            ) from sync_error
 
     def _scheduled_containers_to_run(
         self, now: datetime, run_daily_snapshot: bool
