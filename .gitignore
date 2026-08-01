@@ -1,2 +1,16 @@
 # Ignore local runtime config so it is not published
 docker_schedule_config.json
+
+# Runtime state (tracks which day last had a daily snapshot)
+*_state.json
+*_state.json.corrupt
+
+# Logs
+*.log
+
+# Python build artefacts
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/

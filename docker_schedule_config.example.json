@@ -5,16 +5,31 @@
     "daily_hour": 0,
     "daily_minute": 0
   },
+  "runtime": {
+    "max_parallel_tasks": 0,
+    "container_timeout_seconds": null,
+    "docker_command_timeout_seconds": 60,
+    "docker_retries": 2,
+    "docker_retry_backoff_seconds": 2,
+    "failure_log_lines": 20,
+    "create_missing_from_image": true,
+    "poll_interval_seconds": 5,
+    "startup_catch_up_minutes": 5,
+    "reload_config_on_change": true
+  },
   "pipelines": {
     "example": {
       "sync": "exampleSync",
       "hourly_snapshot": "exampleSnapshotHourly",
-      "daily_snapshot": "exampleSnapshotDaily"
+      "daily_snapshot": "exampleSnapshotDaily",
+      "allow_sync_failure": true
     },
     "secondary": {
       "sync": "secondarySync",
       "hourly_snapshot": "secondarySnapshotHourly",
-      "daily_snapshot": "secondarySnapshotDaily"
+      "daily_snapshot": "secondarySnapshotDaily",
+      "timeout_seconds": 3600,
+      "enabled": true
     }
   },
   "scheduled_containers": [

@@ -1,0 +1,5 @@
+# The orchestrator itself runs on the Python standard library only.
+#
+# Windows has no system IANA timezone database, so `schedule.timezone` values
+# such as "Europe/Prague" need this package. On Linux and macOS it is optional.
+tzdata>=2024.1; sys_platform == "win32"
