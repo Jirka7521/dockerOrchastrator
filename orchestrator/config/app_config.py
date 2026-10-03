@@ -14,8 +14,16 @@ from orchestrator.config.runtime_config import RuntimeConfig
 from orchestrator.config.schedule_config import ScheduleConfig
 from orchestrator.config.scheduled_container_config import ScheduledContainerConfig
 from orchestrator.errors import ConfigError
+from orchestrator.status.status_config import StatusReporterConfig
 
-KNOWN_KEYS = ("schedule", "runtime", "pipelines", "scheduled_containers", "state_file")
+KNOWN_KEYS = (
+    "schedule",
+    "runtime",
+    "pipelines",
+    "scheduled_containers",
+    "state_file",
+    "status_reporter",
+)
 
 _LOG = logging.getLogger(__name__)
 
@@ -30,6 +38,8 @@ class AppConfig:
     scheduled_containers: List[ScheduledContainerConfig]
     state_file: Path
     source_path: Path | None = field(default=None, compare=False)
+    #: Optional reporting to the serverStatusPage dashboard; disabled unless configured.
+    status_reporter: StatusReporterConfig = field(default_factory=StatusReporterConfig)
 
     # ------------------------------------------------------------------ build
 
@@ -46,11 +56,15 @@ class AppConfig:
 
         pipelines = AppConfig._build_pipelines(reader)
         scheduled_containers = AppConfig._build_scheduled_containers(reader)
+        status_reporter = StatusReporterConfig.from_dict(
+            reader.mapping("status_reporter", {}),
+            base_dir=source_path.parent if source_path else Path.cwd(),
+        )
 
-        if not pipelines and not scheduled_containers:
+        if not pipelines and not scheduled_containers and not status_reporter.enabled:
             raise ConfigError(
                 "Nothing to run: define at least one entry under 'pipelines' or "
-                "'scheduled_containers'"
+                "'scheduled_containers', or enable 'status_reporter'"
             )
 
         config = AppConfig(
@@ -60,6 +74,7 @@ class AppConfig:
             scheduled_containers=scheduled_containers,
             state_file=AppConfig._resolve_state_file(reader, source_path),
             source_path=source_path,
+            status_reporter=status_reporter,
         )
         config.validate()
         return config
@@ -112,7 +127,11 @@ class AppConfig:
                 + ", ".join(sorted(duplicates))
             )
 
-        if not self.enabled_pipelines and not self.enabled_scheduled_containers:
+        if (
+            not self.enabled_pipelines
+            and not self.enabled_scheduled_containers
+            and not self.status_reporter.enabled
+        ):
             _LOG.warning(
                 "Every pipeline and scheduled container is disabled; runs will do nothing."
             )
@@ -146,6 +165,7 @@ class AppConfig:
             f"of {len(self.pipelines)}",
             f"scheduled containers: {len(self.enabled_scheduled_containers)} enabled "
             f"of {len(self.scheduled_containers)}",
+            self.status_reporter.describe(),
         ]
         for pipeline in self.pipelines:
             state = "" if pipeline.enabled else " [disabled]"

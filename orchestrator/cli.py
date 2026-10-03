@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
+import sys
 from pathlib import Path
 from typing import List, Sequence
 
@@ -15,6 +17,7 @@ from orchestrator.logging_setup import LEVELS, LoggingSetup
 from orchestrator.runtime.orchestrator_daemon import OrchestratorDaemon
 from orchestrator.runtime.orchestrator_factory import OrchestratorFactory
 from orchestrator.runtime.run_report import EXIT_FAILED, EXIT_OK
+from orchestrator.status.status_reporter import StatusReporter
 
 DEFAULT_CONFIG = "docker_schedule_config.json"
 
@@ -73,6 +76,23 @@ class Cli:
             help="Load and check the config file, print a summary, and exit.",
         )
         parser.add_argument(
+            "--status-snapshot",
+            action="store_true",
+            help=(
+                "Collect every status report once and print it as JSON, without "
+                "sending anything to the dashboard API."
+            ),
+        )
+        parser.add_argument(
+            "--status-test",
+            action="store_true",
+            help=(
+                "Send every status report once and poll for commands once, then "
+                "print the outcome per channel. Checks the API URL, the key and "
+                "the router rules."
+            ),
+        )
+        parser.add_argument(
             "--exit-zero-on-failure",
             action="store_true",
             help="Always exit with 0, even when containers failed.",
@@ -117,6 +137,9 @@ class Cli:
 
         factory = OrchestratorFactory(docker_executable=args.docker_executable)
 
+        if args.status_snapshot or args.status_test:
+            return self._run_status_tool(config, factory, test=args.status_test)
+
         try:
             if args.once or args.dry_run:
                 exit_code = self._run_once(config, factory, args)
@@ -160,10 +183,21 @@ class Cli:
         factory: OrchestratorFactory,
     ) -> int:
         self.log.info("Configuration loaded:\n%s", config.describe())
+
+        # The status reporter runs beside the schedule, on its own threads. A
+        # problem with it (an unreadable key file) is logged and leaves the
+        # scheduling itself untouched: backups matter more than the dashboard.
+        reporter = StatusReporter(config.status_reporter, factory.create_command(config))
+        try:
+            reporter.start()
+        except ConfigError as exc:
+            self.log.error("Status reporter not started: %s", exc)
+
         daemon = OrchestratorDaemon(
             orchestrator=factory.create(config),
             config_loader=loader,
             factory=factory,
+            on_config_reloaded=lambda reloaded: reporter.reconfigure(reloaded.status_reporter),
         )
         daemon.install_signal_handlers()
         try:
@@ -172,6 +206,28 @@ class Cli:
             daemon.request_stop()
             self.log.info("Interrupted; daemon stopped.")
             return EXIT_OK
+        finally:
+            reporter.stop()
+
+    def _run_status_tool(self, config: AppConfig, factory: OrchestratorFactory, test: bool) -> int:
+        reporter = StatusReporter(config.status_reporter, factory.create_command(config))
+        if not test:
+            json.dump(reporter.snapshot(), sys.stdout, indent=2, ensure_ascii=False)
+            sys.stdout.write("\n")
+            return EXIT_OK
+
+        if not config.status_reporter.enabled:
+            self.log.error("status_reporter is not enabled in %s", config.source_path)
+            return EXIT_CONFIG_ERROR
+        try:
+            outcome = reporter.test_round()
+        except ConfigError as exc:
+            self.log.error("Status test failed: %s", exc)
+            return EXIT_CONFIG_ERROR
+
+        for channel, result in outcome.items():
+            self.log.info("%-13s %s", channel, result)
+        return EXIT_OK if all(result == "ok" for result in outcome.values()) else EXIT_FAILED
 
 
 def main(argv: Sequence[str] | None = None) -> int:

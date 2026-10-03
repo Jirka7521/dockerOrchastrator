@@ -6,6 +6,9 @@ import logging
 import signal
 import threading
 from datetime import datetime
+from typing import Callable
+
+from orchestrator.config.app_config import AppConfig
 
 from orchestrator.config.config_loader import ConfigLoader
 from orchestrator.runtime.orchestrator import Orchestrator
@@ -31,10 +34,12 @@ class OrchestratorDaemon:
         orchestrator: Orchestrator,
         config_loader: ConfigLoader | None = None,
         factory: OrchestratorFactory | None = None,
+        on_config_reloaded: Callable[[AppConfig], None] | None = None,
     ) -> None:
         self.orchestrator = orchestrator
         self.config_loader = config_loader
         self.factory = factory
+        self.on_config_reloaded = on_config_reloaded
         self.stop_event = threading.Event()
         self.last_slot_key: str | None = None
         self.consecutive_failures = 0
@@ -167,6 +172,12 @@ class OrchestratorDaemon:
         self._clock = config.schedule.create_clock()
         self._evaluator = self.orchestrator.evaluator
         self.log.info("Configuration reloaded:\n%s", config.describe())
+
+        if self.on_config_reloaded is not None:
+            try:
+                self.on_config_reloaded(config)
+            except Exception:  # noqa: BLE001 - a listener must not stop the daemon
+                self.log.exception("A configuration-reload listener failed; continuing.")
 
     def _sleep_until_next_check(self) -> None:
         """Wait a bounded amount of time, waking early on a stop request."""
