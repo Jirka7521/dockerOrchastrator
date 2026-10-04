@@ -122,7 +122,7 @@ orchestrator/
 │   ├── status_reporter.py        # StatusReporter — one thread per channel
 │   └── collectors/               # one class per data source (cpu, memory, thermal,
 │                                 # throttle, filesystems, disk I/O, network, Docker
-│                                 # networks, SMART, connectivity, sensor, containers, logs)
+│                                 # networks, SMART, connectivity, containers, logs)
 └── runtime/
     ├── task.py                   # Task — abstract unit of work
     ├── task_result.py            # TaskResult — outcome of one task
@@ -292,7 +292,9 @@ dashboard API, on threads of its own beside the schedule:
 | containers | 10 s | `docker ps` + `docker inspect`: state, health, exit code, start/finish times, restarts. **No command lines or environments** -- they carry secrets |
 | connectivity | 30 s | `ping` to each target, a DNS probe |
 | disks | 10 min | `smartctl -a -n standby` per disk (a sleeping disk is not woken) |
-| sensor | 60 s | the temperature stack's `/api/v1/current`, raw |
+
+The temperature sensor is not checked from here: the dashboard API watches it
+on its MQTT broker itself.
 
 It also long-polls the API for log requests and answers them with
 `docker logs`. That is the only command that exists.
@@ -325,8 +327,7 @@ variables are ignored. Protocol details: serverStatusPage `docs/AGENT_PROTOCOL.m
    "status_reporter": {
      "enabled": true,
      "api_url": "http://192.168.130.2:8080",
-     "shared_key_file": "secrets/status_agent_key",
-     "sensor_url": "http://192.168.128.2:8080/api/v1/current"
+     "shared_key_file": "secrets/status_agent_key"
    }
    ```
 
@@ -353,8 +354,6 @@ from `vcgencmd`, with a sysfs fallback.
 | `containers_interval_seconds` | `10` | Container list cadence (5–3600) |
 | `connectivity_interval_seconds` | `30` | Ping/DNS cadence (10–3600) |
 | `disk_health_interval_seconds` | `600` | SMART cadence (60–86400) |
-| `sensor_interval_seconds` | `60` | Temperature sensor check cadence (15–3600) |
-| `sensor_url` | `null` | The temperature API's current-reading URL; `null` disables the check |
 | `ping_targets` | `["1.1.1.1", "8.8.8.8"]` | Hosts to ping |
 | `ping_count` | `3` | Pings per target |
 | `dns_probe_host` | `"cloudflare.com"` | Name resolved by the DNS probe |

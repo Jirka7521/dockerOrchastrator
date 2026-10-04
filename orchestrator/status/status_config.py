@@ -23,13 +23,11 @@ KNOWN_KEYS = (
     "containers_interval_seconds",
     "connectivity_interval_seconds",
     "disk_health_interval_seconds",
-    "sensor_interval_seconds",
     "request_timeout_seconds",
     "command_poll_seconds",
     "ping_targets",
     "ping_count",
     "dns_probe_host",
-    "sensor_url",
     "smartctl_executable",
     "vcgencmd_executable",
     "max_log_lines",
@@ -60,7 +58,6 @@ class StatusReporterConfig:
     containers_interval_seconds: float = 10.0
     connectivity_interval_seconds: float = 30.0
     disk_health_interval_seconds: float = 600.0
-    sensor_interval_seconds: float = 60.0
 
     request_timeout_seconds: float = 10.0
     command_poll_seconds: int = 25
@@ -68,9 +65,6 @@ class StatusReporterConfig:
     ping_targets: Tuple[str, ...] = ("1.1.1.1", "8.8.8.8")
     ping_count: int = 3
     dns_probe_host: str = "cloudflare.com"
-
-    #: The temperature stack's ``/api/v1/current``; ``None`` disables the sensor check.
-    sensor_url: str | None = None
 
     smartctl_executable: str = "smartctl"
     vcgencmd_executable: str = "vcgencmd"
@@ -120,9 +114,6 @@ class StatusReporterConfig:
             disk_health_interval_seconds=reader.number(
                 "disk_health_interval_seconds", defaults.disk_health_interval_seconds, minimum=60, maximum=86400
             ),
-            sensor_interval_seconds=reader.number(
-                "sensor_interval_seconds", defaults.sensor_interval_seconds, minimum=15, maximum=3600
-            ),
             request_timeout_seconds=reader.number(
                 "request_timeout_seconds", defaults.request_timeout_seconds, minimum=1, maximum=120
             ),
@@ -134,7 +125,6 @@ class StatusReporterConfig:
             dns_probe_host=StatusReporterConfig._host(
                 reader.text("dns_probe_host", defaults.dns_probe_host), f"{path}.dns_probe_host"
             ),
-            sensor_url=StatusReporterConfig._http_url(reader, "sensor_url", required=False),
             smartctl_executable=reader.text("smartctl_executable", defaults.smartctl_executable),
             vcgencmd_executable=reader.text("vcgencmd_executable", defaults.vcgencmd_executable),
             max_log_lines=reader.integer("max_log_lines", defaults.max_log_lines, minimum=10, maximum=20000),
@@ -182,10 +172,9 @@ class StatusReporterConfig:
     def describe(self) -> str:
         if not self.enabled:
             return "status reporter   : disabled"
-        sensor = self.sensor_url or "off"
         return (
             f"status reporter   : {self.api_url} (host {self.host_interval_seconds:g}s, "
-            f"containers {self.containers_interval_seconds:g}s, sensor {sensor})"
+            f"containers {self.containers_interval_seconds:g}s)"
         )
 
     # ---------------------------------------------------------------- helpers

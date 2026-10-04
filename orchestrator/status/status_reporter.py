@@ -22,7 +22,6 @@ from orchestrator.status.collectors.host_collector import HostCollector
 from orchestrator.status.collectors.log_fetcher import LogFetcher
 from orchestrator.status.collectors.memory_collector import MemoryCollector
 from orchestrator.status.collectors.network_collector import NetworkCollector
-from orchestrator.status.collectors.sensor_collector import SensorCollector
 from orchestrator.status.collectors.smart_collector import SmartCollector
 from orchestrator.status.collectors.thermal_collector import ThermalCollector
 from orchestrator.status.collectors.throttle_collector import ThrottleCollector
@@ -44,7 +43,6 @@ class _Collectors:
     containers: ContainerCollector
     connectivity: ConnectivityCollector
     smart: SmartCollector
-    sensor: SensorCollector | None
     logs: LogFetcher
 
 
@@ -110,11 +108,6 @@ class StatusReporter:
             ("connectivity", config.connectivity_interval_seconds, lambda: client.send_report("POST", "/connectivity", self._stamped(collectors.connectivity.collect())), None),
             ("disks", config.disk_health_interval_seconds, lambda: client.send_report("POST", "/disks", self._stamped(collectors.smart.collect())), None),
         ]
-        if collectors.sensor is not None:
-            sensor = collectors.sensor
-            channels.append(
-                ("sensor", config.sensor_interval_seconds, lambda: client.send_report("POST", "/sensor", self._stamped(sensor.collect())), None)
-            )
 
         self._threads = [
             self._thread(f"status-{name}", self._periodic, name, interval, work, prime)
@@ -190,7 +183,6 @@ class StatusReporter:
             containers=ContainerCollector(self._command),
             connectivity=ConnectivityCollector(config.ping_targets, config.ping_count, config.dns_probe_host),
             smart=SmartCollector(paths, config.smartctl_executable),
-            sensor=SensorCollector(config.sensor_url) if config.sensor_url else None,
             logs=LogFetcher(self._command, config.max_log_lines, config.max_log_bytes),
         )
 
@@ -209,8 +201,6 @@ class StatusReporter:
             "connectivity": self._stamped(collectors.connectivity.collect()),
             "disks": self._stamped(collectors.smart.collect()),
         }
-        if collectors.sensor is not None:
-            result["sensor"] = self._stamped(collectors.sensor.collect())
         return result
 
     def test_round(self) -> Dict[str, str]:
@@ -228,9 +218,6 @@ class StatusReporter:
             ("disks", lambda: client.send_report("POST", "/disks", self._stamped(collectors.smart.collect()))),
             ("commands", lambda: client.poll_commands(0)),
         ]
-        if collectors.sensor is not None:
-            sensor = collectors.sensor
-            steps.insert(4, ("sensor", lambda: client.send_report("POST", "/sensor", self._stamped(sensor.collect()))))
 
         outcome: Dict[str, str] = {}
         for name, step in steps:

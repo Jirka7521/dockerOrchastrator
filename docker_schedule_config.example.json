@@ -45,7 +45,6 @@
   "status_reporter": {
     "enabled": false,
     "api_url": "http://192.168.130.2:8080",
-    "shared_key_file": "secrets/status_agent_key",
-    "sensor_url": "http://192.168.128.2:8080/api/v1/current"
+    "shared_key_file": "secrets/status_agent_key"
   }
 }

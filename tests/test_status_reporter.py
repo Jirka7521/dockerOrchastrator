@@ -68,7 +68,6 @@ class StatusReporterTests(unittest.TestCase):
             containers_interval_seconds=0.05,
             connectivity_interval_seconds=0.05,
             disk_health_interval_seconds=0.05,
-            sensor_interval_seconds=0.05,
             command_poll_seconds=1,
             ping_targets=(),
             dns_probe_host="localhost",
