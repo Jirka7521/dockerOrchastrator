@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import dataclasses
 import json
 import os
 import threading
@@ -11,10 +12,12 @@ import unittest
 from pathlib import Path
 from typing import List
 
+from orchestrator.status.command_types import ALL
 from orchestrator.status.status_config import StatusReporterConfig
 from orchestrator.status.status_reporter import StatusReporter
 from tests.fakes import FakeDockerCommand
 from tests.status_support import FakeHost
+from tests.test_status_commands import FakeSystemctl, fake_power
 
 CONTAINER = {
     "Id": "a" * 64,
@@ -31,23 +34,31 @@ class FakeClient:
     def __init__(self) -> None:
         self.reports: List[tuple] = []
         self.results: List[tuple] = []
+        self.accepts: List[tuple] = []
         self.commands = [{"id": "c" * 32, "type": "logs", "container": "temp-fe", "tail": 5}]
+        #: What send_command_result answers: False is the API's 404, "nobody waits".
+        self.taken = True
         self.lock = threading.Lock()
 
     def send_report(self, method: str, endpoint: str, payload: dict) -> None:
         with self.lock:
             self.reports.append((method, endpoint, payload))
 
-    def poll_commands(self, wait_seconds: int) -> list:
+    def poll_commands(self, wait_seconds: int, accept=("logs",)) -> list:
         time.sleep(0.05)
         with self.lock:
+            self.accepts.append(tuple(accept))
             commands, self.commands = self.commands, []
         return commands
 
     def send_command_result(self, command_id: str, result: dict) -> bool:
         with self.lock:
             self.results.append((command_id, result))
-        return True
+        return self.taken
+
+    def container_reports(self) -> int:
+        with self.lock:
+            return sum(1 for _, endpoint, _ in self.reports if endpoint == "/containers")
 
     def endpoints(self) -> set:
         with self.lock:
@@ -85,8 +96,17 @@ class StatusReporterTests(unittest.TestCase):
         )
         self.client = FakeClient()
 
-    def _reporter(self) -> StatusReporter:
-        return StatusReporter(self.config, self.command, self.host.paths, client_factory=lambda cfg, key: self.client)
+    def _reporter(self, config: StatusReporterConfig | None = None, systemctl: FakeSystemctl | None = None) -> StatusReporter:
+        return StatusReporter(
+            config or self.config,
+            self.command,
+            self.host.paths,
+            client_factory=lambda cfg, key: self.client,
+            power=fake_power(systemctl or FakeSystemctl()),
+        )
+
+    def _allowing_everything(self, **changes) -> StatusReporterConfig:
+        return dataclasses.replace(self.config, allowed_commands=ALL, **changes)
 
     def _wait_for(self, condition, timeout: float = 5.0) -> None:
         deadline = time.monotonic() + timeout
@@ -116,6 +136,59 @@ class StatusReporterTests(unittest.TestCase):
         containers = [payload for _, endpoint, payload in self.client.reports if endpoint == "/containers"][0]
         self.assertIn("collectedAt", containers)
         self.assertEqual("Up 2 months (healthy)", containers["containers"][0]["status"])
+
+    def test_every_poll_says_what_this_host_allows(self) -> None:
+        reporter = self._reporter(dataclasses.replace(self.config, allowed_commands=("logs", "restart")))
+        reporter.start()
+        try:
+            self._wait_for(lambda: len(self.client.accepts) >= 2)
+        finally:
+            reporter.stop()
+
+        self.assertEqual({("logs", "restart")}, set(self.client.accepts))
+
+    def test_a_container_action_runs_on_a_worker_and_the_list_follows_at_once(self) -> None:
+        # A slow regular cadence: a container report within the first second
+        # can only come from the action waking the channel.
+        self.client.commands = [{"id": "d" * 32, "type": "restart", "container": "temp-fe"}]
+        reporter = self._reporter(self._allowing_everything(containers_interval_seconds=60))
+        reporter.start()
+        try:
+            self._wait_for(lambda: len(self.client.results) == 1)
+            self._wait_for(lambda: self.client.container_reports() >= 1, timeout=0.8)
+        finally:
+            reporter.stop()
+
+        command_id, result = self.client.results[0]
+        self.assertEqual(("d" * 32, True), (command_id, result["ok"]))
+        self.assertIn(["restart", "temp-fe"], self.command.calls)
+
+    def test_a_reboot_happens_only_after_the_api_took_the_answer(self) -> None:
+        systemctl = FakeSystemctl()
+        self.client.commands = [{"id": "e" * 32, "type": "reboot"}]
+        reporter = self._reporter(self._allowing_everything(), systemctl)
+        reporter.start()
+        try:
+            self.assertTrue(systemctl.ran.wait(5))
+        finally:
+            reporter.stop()
+
+        self.assertEqual(("e" * 32, True), (self.client.results[0][0], self.client.results[0][1]["ok"]))
+        self.assertEqual("reboot", systemctl.calls[0][-1])
+
+    def test_a_reboot_nobody_waits_for_any_more_never_happens(self) -> None:
+        systemctl = FakeSystemctl()
+        self.client.commands = [{"id": "f" * 32, "type": "poweroff"}]
+        self.client.taken = False  # the dashboard request timed out: the API answers 404
+        reporter = self._reporter(self._allowing_everything(), systemctl)
+        reporter.start()
+        try:
+            self._wait_for(lambda: len(self.client.results) == 1)
+            self.assertFalse(systemctl.ran.wait(0.5))
+        finally:
+            reporter.stop()
+
+        self.assertEqual([], systemctl.calls)
 
     def test_a_disabled_reporter_starts_nothing(self) -> None:
         reporter = StatusReporter(StatusReporterConfig(), self.command, self.host.paths)

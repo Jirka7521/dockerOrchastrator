@@ -8,7 +8,7 @@ import socket
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from typing import Any, List, Mapping
+from typing import Any, List, Mapping, Sequence
 from urllib.parse import urlsplit
 
 from orchestrator import __version__
@@ -75,14 +75,21 @@ class StatusApiClient:
 
     # --------------------------------------------------------------- commands
 
-    def poll_commands(self, wait_seconds: int) -> List[dict]:
+    def poll_commands(self, wait_seconds: int, accept: Sequence[str] = ("logs",)) -> List[dict]:
         """Long-poll for commands. Verifies the API's signature before trusting any.
+
+        ``accept`` tells the API which command types this host runs, so it
+        never queues one that would only be refused here. It travels in the
+        signed request target. An empty list is sent as ``none``: no
+        parameter at all would mean "logs only" to the API, the answer for an
+        orchestrator from before the list.
 
         A response with a missing or wrong signature is treated as an attack
         or a misconfiguration -- never as instructions.
         """
+        types = ",".join(accept) or "none"
         response = self._send(
-            "GET", f"/commands?wait={int(wait_seconds)}", None, wait_seconds + self._timeout
+            "GET", f"/commands?wait={int(wait_seconds)}&accept={types}", None, wait_seconds + self._timeout
         )
         if response.status != 200:
             raise StatusApiRejected(response.status, self._problem(response.body))

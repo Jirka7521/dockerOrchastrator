@@ -14,6 +14,8 @@ from urllib.parse import urlsplit
 
 from orchestrator.config.field_reader import FieldReader
 from orchestrator.errors import ConfigError
+from orchestrator.status.command_types import ALL as COMMAND_TYPES
+from orchestrator.status.command_types import DEFAULT_ALLOWED
 
 KNOWN_KEYS = (
     "enabled",
@@ -32,6 +34,9 @@ KNOWN_KEYS = (
     "vcgencmd_executable",
     "max_log_lines",
     "max_log_bytes",
+    "allowed_commands",
+    "container_action_timeout_seconds",
+    "systemctl_executable",
 )
 
 #: Host names and IP literals -- what may be handed to ping and getaddrinfo.
@@ -72,6 +77,13 @@ class StatusReporterConfig:
     max_log_lines: int = 5000
     max_log_bytes: int = 2_000_000
 
+    #: What the dashboard may ask this host to do. Reading logs only, unless
+    #: the person who owns the host adds more: this file is the one place
+    #: that decides, and the API cannot change it.
+    allowed_commands: Tuple[str, ...] = DEFAULT_ALLOWED
+    container_action_timeout_seconds: float = 120.0
+    systemctl_executable: str = "systemctl"
+
     # ------------------------------------------------------------------ build
 
     @staticmethod
@@ -96,6 +108,14 @@ class StatusReporterConfig:
         targets = tuple(
             StatusReporterConfig._host(item, f"{path}.ping_targets[{index}]")
             for index, item in enumerate(reader.sequence("ping_targets", list(defaults.ping_targets)))
+        )
+
+        # Duplicates dropped, order kept: the list is shown back as written.
+        allowed = tuple(
+            dict.fromkeys(
+                StatusReporterConfig._command_type(item, f"{path}.allowed_commands[{index}]")
+                for index, item in enumerate(reader.sequence("allowed_commands", list(defaults.allowed_commands)))
+            )
         )
 
         return StatusReporterConfig(
@@ -131,6 +151,11 @@ class StatusReporterConfig:
             max_log_bytes=reader.integer(
                 "max_log_bytes", defaults.max_log_bytes, minimum=10_000, maximum=4_000_000
             ),
+            allowed_commands=allowed,
+            container_action_timeout_seconds=reader.number(
+                "container_action_timeout_seconds", defaults.container_action_timeout_seconds, minimum=10, maximum=900
+            ),
+            systemctl_executable=reader.text("systemctl_executable", defaults.systemctl_executable),
         )
 
     # --------------------------------------------------------------- key file
@@ -174,7 +199,8 @@ class StatusReporterConfig:
             return "status reporter   : disabled"
         return (
             f"status reporter   : {self.api_url} (host {self.host_interval_seconds:g}s, "
-            f"containers {self.containers_interval_seconds:g}s)"
+            f"containers {self.containers_interval_seconds:g}s; "
+            f"allowed commands: {', '.join(self.allowed_commands) or 'none'})"
         )
 
     # ---------------------------------------------------------------- helpers
@@ -187,6 +213,12 @@ class StatusReporterConfig:
         parts = urlsplit(value)
         if parts.scheme not in ("http", "https") or not parts.hostname:
             raise ConfigError(f"status_reporter.{key} must be an http:// or https:// URL")
+        return value
+
+    @staticmethod
+    def _command_type(value: Any, key_path: str) -> str:
+        if value not in COMMAND_TYPES:
+            raise ConfigError(f"{key_path} must be one of {', '.join(COMMAND_TYPES)}")
         return value
 
     @staticmethod
