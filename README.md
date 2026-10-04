@@ -11,6 +11,7 @@ afterwards, plus any number of standalone scheduled containers.
 - [Configuration reference](#configuration-reference)
 - [Scheduling rules](#scheduling-rules)
 - [Failure handling](#failure-handling)
+- [Status reporter (serverStatusPage)](#status-reporter-serverstatuspage)
 - [Running as a service](#running-as-a-service)
 - [Development](#development)
 - [Notes and limitations](#notes-and-limitations)
@@ -111,6 +112,17 @@ orchestrator/
 ├── state/
 │   ├── run_state_store.py        # RunStateStore — atomic JSON key/value file
 │   └── daily_run_state.py        # DailyRunState — which day already ran
+├── status/                       # optional reporting to the serverStatusPage dashboard
+│   ├── status_config.py          # StatusReporterConfig — the status_reporter section
+│   ├── request_signer.py         # RequestSigner — HMAC-SHA256, shared with the API
+│   ├── status_api_client.py      # StatusApiClient — signed HTTP, no proxies
+│   ├── command_executor.py       # CommandExecutor — validates the one command (logs)
+│   ├── failure_log_throttle.py   # FailureLogThrottle — one warning per outage, not 240
+│   ├── host_paths.py             # HostPaths — /proc and /sys roots (fakeable)
+│   ├── status_reporter.py        # StatusReporter — one thread per channel
+│   └── collectors/               # one class per data source (cpu, memory, thermal,
+│                                 # throttle, filesystems, disk I/O, network, Docker
+│                                 # networks, SMART, connectivity, containers, logs)
 └── runtime/
     ├── task.py                   # Task — abstract unit of work
     ├── task_result.py            # TaskResult — outcome of one task
@@ -142,6 +154,8 @@ exception hierarchy, which is easier to read in one place.
 | `--docker-executable <name>` | Name or path of the Docker CLI binary |
 | `--log-level <level>` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` |
 | `--log-file <path>` | Also log to a rotating file (5 MB × 3) |
+| `--status-snapshot` | Collect every status report once and print it as JSON; sends nothing |
+| `--status-test` | Send every status report once and poll for commands once; prints the outcome per channel |
 | `--version` | Print the version and exit |
 
 ### Exit codes
@@ -263,6 +277,96 @@ for the next one.
 | The state file is corrupt | It is moved aside and the run continues; the worst case is one redundant daily snapshot |
 | The config file is edited | The daemon reloads it on the next poll. A config that no longer parses is reported and ignored — the daemon keeps the last good one |
 | A cycle crashes unexpectedly | Logged with a traceback; the daemon claims that slot and continues with the next tick |
+
+---
+
+## Status reporter (serverStatusPage)
+
+Optional, and off unless configured. When enabled, the daemon also reports the
+host's state to the [serverStatusPage](https://github.com/Jirka7521/serverStatusPage)
+dashboard API, on threads of its own beside the schedule:
+
+| Channel | Every | What |
+| --- | --- | --- |
+| host | 15 s | CPU (total, per core, load, clock), memory, temperatures, Pi throttle flags, filesystems (resolved through LUKS/partitions to disks, ext4 error counters), disk I/O, every network interface with the Docker networks it carries |
+| containers | 10 s | `docker ps` + `docker inspect`: state, health, exit code, start/finish times, restarts. **No command lines or environments** -- they carry secrets |
+| connectivity | 30 s | `ping` to each target, a DNS probe |
+| disks | 10 min | `smartctl -a -n standby` per disk (a sleeping disk is not woken) |
+
+The temperature sensor is not checked from here: the dashboard API watches it
+on its MQTT broker itself.
+
+It also long-polls the API for log requests and answers them with
+`docker logs`. That is the only command that exists.
+
+**Security model.** Every connection is outbound from this root process; it
+opens no port. Every request is signed (HMAC-SHA256 over method, target, body,
+timestamp and a single-use nonce), and command responses must carry the API's
+signature bound to the request's nonce, or they are ignored. A log command is
+checked against this process's own container list and a strict name pattern,
+and runs `docker logs` with an argument list -- never a shell. Proxy environment
+variables are ignored. Protocol details: serverStatusPage `docs/AGENT_PROTOCOL.md`.
+
+### Setup
+
+1. The shared key is generated on the dashboard side
+   (`serverStatusPage/scripts/generate-secrets.sh`). Install a root-only copy:
+
+   ```bash
+   sudo install -d -m 700 /path/to/orchestrator/secrets
+   sudo install -m 600 -o root -g root \
+     /mnt/externalSSD0/dockerScripts/serverStatusPage/secrets/agent_shared_key \
+     /path/to/orchestrator/secrets/status_agent_key
+   ```
+
+   The reporter refuses a key file that other users can read.
+
+2. Add the section to `docker_schedule_config.json` (see the example config):
+
+   ```json
+   "status_reporter": {
+     "enabled": true,
+     "api_url": "http://192.168.130.2:8080",
+     "shared_key_file": "secrets/status_agent_key"
+   }
+   ```
+
+3. Check, then restart the service:
+
+   ```bash
+   sudo python3 docker_orchestrator.py --status-snapshot | less   # what would be sent
+   sudo python3 docker_orchestrator.py --status-test              # key, URL, router rules
+   sudo systemctl restart docker-orchestrator
+   ```
+
+SMART needs `smartmontools` (`sudo apt install smartmontools`); without it the
+disks are listed with a note instead. On a Raspberry Pi the throttle flags come
+from `vcgencmd`, with a sysfs fallback.
+
+### `status_reporter`
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `false` | Turn reporting on |
+| `api_url` | required | The dashboard API, e.g. `http://192.168.130.2:8080` |
+| `shared_key_file` | required | Base64 key, mode 600; relative paths resolve against the config file |
+| `host_interval_seconds` | `15` | Host report cadence (5–3600) |
+| `containers_interval_seconds` | `10` | Container list cadence (5–3600) |
+| `connectivity_interval_seconds` | `30` | Ping/DNS cadence (10–3600) |
+| `disk_health_interval_seconds` | `600` | SMART cadence (60–86400) |
+| `ping_targets` | `["1.1.1.1", "8.8.8.8"]` | Hosts to ping |
+| `ping_count` | `3` | Pings per target |
+| `dns_probe_host` | `"cloudflare.com"` | Name resolved by the DNS probe |
+| `request_timeout_seconds` | `10` | Per-request timeout |
+| `command_poll_seconds` | `25` | How long one command long-poll is held open |
+| `smartctl_executable` | `"smartctl"` | |
+| `vcgencmd_executable` | `"vcgencmd"` | |
+| `max_log_lines` | `5000` | Upper bound for one log request |
+| `max_log_bytes` | `2000000` | Size cap for one log result |
+
+When the API is unreachable, each channel logs its first failure, a reminder
+every ten minutes, and a line when it recovers -- not one warning per attempt.
+A config reload restarts the reporter only if its section changed.
 
 ---
 

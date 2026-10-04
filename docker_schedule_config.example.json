@@ -41,5 +41,10 @@
       "name": "wattwise-simulate-12h-1",
       "period": "every_6_hours"
     }
-  ]
+  ],
+  "status_reporter": {
+    "enabled": false,
+    "api_url": "http://192.168.130.2:8080",
+    "shared_key_file": "secrets/status_agent_key"
+  }
 }
