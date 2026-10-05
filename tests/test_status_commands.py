@@ -1,12 +1,39 @@
-"""Log fetching and the command executor -- the trust boundary to the API."""
+"""Log fetching, container and power control, and the command executor -- the trust boundary to the API."""
 
 from __future__ import annotations
 
+import subprocess
+import sys
+import threading
 import unittest
+from typing import List, Sequence
 
 from orchestrator.status.collectors.log_fetcher import LogFetcher
 from orchestrator.status.command_executor import CommandExecutor
+from orchestrator.status.command_types import ALL
+from orchestrator.status.container_control import ContainerControl
+from orchestrator.status.power_control import PowerControl
 from tests.fakes import FakeDockerCommand
+
+
+class FakeSystemctl:
+    """Records what would have run; the host is never touched."""
+
+    def __init__(self, returncode: int = 0) -> None:
+        self.calls: List[List[str]] = []
+        self.returncode = returncode
+        self.ran = threading.Event()
+
+    def __call__(self, args: Sequence[str]) -> subprocess.CompletedProcess:
+        self.calls.append(list(args))
+        self.ran.set()
+        return subprocess.CompletedProcess(list(args), self.returncode, "", "boom" if self.returncode else "")
+
+
+def fake_power(systemctl: FakeSystemctl, executable: str = sys.executable) -> PowerControl:
+    """Power control whose "systemctl" is a fake, with no delay. ``executable``
+    only has to exist for the pre-check; it is never run."""
+    return PowerControl(executable=executable, runner=systemctl, sleeper=lambda _seconds: None)
 
 STDOUT = (
     "2026-10-03T19:30:00.000000001Z first\n"
@@ -53,21 +80,83 @@ class CommandExecutorTests(unittest.TestCase):
         fetcher = LogFetcher(self.command, max_lines=5000, max_bytes=100_000)
         self.executor = CommandExecutor(fetcher, known_containers=lambda: {"temp-fe", "status-api"}, max_lines=5000)
 
-    def _refused(self, command: dict) -> str:
-        result = self.executor.execute(command)
-        self.assertFalse(result["ok"])
+    def _refused(self, command: dict, executor: CommandExecutor | None = None) -> str:
+        outcome = (executor or self.executor).execute(command)
+        self.assertFalse(outcome.result["ok"])
+        self.assertIsNone(outcome.after_delivery)
         self.assertEqual([], self.command.calls, "docker must not have been called")
-        return result["error"]
+        return outcome.result["error"]
+
+    def _allowing_everything(self, systemctl: FakeSystemctl | None = None, systemctl_path: str = sys.executable) -> CommandExecutor:
+        fetcher = LogFetcher(self.command, max_lines=5000, max_bytes=100_000)
+        return CommandExecutor(
+            fetcher,
+            known_containers=lambda: {"temp-fe", "status-api"},
+            max_lines=5000,
+            allowed=ALL,
+            containers=ContainerControl(self.command, timeout_seconds=120),
+            power=fake_power(systemctl or FakeSystemctl(), systemctl_path),
+        )
 
     def test_a_valid_log_command_runs(self) -> None:
-        result = self.executor.execute({"type": "logs", "container": "temp-fe", "tail": 100})
+        result = self.executor.execute({"type": "logs", "container": "temp-fe", "tail": 100}).result
 
         self.assertTrue(result["ok"])
         self.assertEqual("hello", result["lines"][0]["text"])
 
+    def test_only_logs_run_unless_the_config_allows_more(self) -> None:
+        for kind in ("start", "stop", "restart", "reboot", "poweroff"):
+            with self.subTest(kind=kind):
+                error = self._refused({"type": kind, "container": "temp-fe"})
+                self.assertIn("not in status_reporter.allowed_commands", error)
+
+    def test_a_container_action_runs_docker_with_the_name_and_nothing_else(self) -> None:
+        executor = self._allowing_everything()
+
+        outcome = executor.execute({"type": "restart", "container": "temp-fe", "tail": 5, "extra": "-t 0"})
+
+        self.assertEqual({"ok": True, "error": None, "truncated": False, "lines": []}, outcome.result)
+        self.assertIsNone(outcome.after_delivery)
+        self.assertEqual([["restart", "temp-fe"]], self.command.calls)
+
+    def test_a_failed_action_reports_dockers_message(self) -> None:
+        self.command.responses["stop"] = (1, "", "Error response from daemon: cannot stop container: temp-fe: permission denied")
+
+        result = self._allowing_everything().execute({"type": "stop", "container": "temp-fe"}).result
+
+        self.assertFalse(result["ok"])
+        self.assertIn("permission denied", result["error"])
+
+    def test_container_actions_check_the_name_like_log_requests(self) -> None:
+        executor = self._allowing_everything()
+
+        self.assertIn("not in the current container list", self._refused({"type": "stop", "container": "other"}, executor))
+        for name in ("--help", "-t", "a b", None):
+            with self.subTest(name=name):
+                self.assertIn("invalid container name", self._refused({"type": "start", "container": name}, executor))
+
+    def test_power_is_accepted_first_and_carried_out_only_after_delivery(self) -> None:
+        systemctl = FakeSystemctl()
+        outcome = self._allowing_everything(systemctl).execute({"type": "reboot", "container": "ignored"})
+
+        self.assertTrue(outcome.result["ok"])
+        self.assertEqual([], systemctl.calls, "nothing may happen before the API has the answer")
+        self.assertIsNotNone(outcome.after_delivery)
+
+        outcome.after_delivery()
+        self.assertTrue(systemctl.ran.wait(5))
+        self.assertEqual([[sys.executable, "reboot"]], systemctl.calls)
+        self.assertEqual([], self.command.calls)
+
+    def test_power_is_refused_up_front_when_systemctl_is_missing(self) -> None:
+        executor = self._allowing_everything(systemctl_path="definitely-not-installed-systemctl")
+
+        self.assertIn("was not found", self._refused({"type": "poweroff"}, executor))
+
     def test_other_command_types_are_refused(self) -> None:
         self.assertIn("unsupported", self._refused({"type": "exec", "container": "temp-fe"}))
         self.assertIn("unsupported", self._refused({"container": "temp-fe"}))
+        self.assertIn("unsupported", self._refused({"type": "exec", "container": "temp-fe"}, self._allowing_everything()))
 
     def test_containers_not_in_the_own_list_are_refused(self) -> None:
         self.assertIn("not in the current container list", self._refused({"type": "logs", "container": "other"}))
@@ -88,8 +177,8 @@ class CommandExecutorTests(unittest.TestCase):
             refresh_containers=lambda: refreshed.append(1) or {"brand-new"},
         )
 
-        self.assertTrue(executor.execute({"type": "logs", "container": "brand-new"})["ok"])
-        self.assertFalse(executor.execute({"type": "logs", "container": "never-existed"})["ok"])
+        self.assertTrue(executor.execute({"type": "logs", "container": "brand-new"}).result["ok"])
+        self.assertFalse(executor.execute({"type": "logs", "container": "never-existed"}).result["ok"])
         self.assertEqual(2, len(refreshed))
 
     def test_the_tail_is_clamped(self) -> None:

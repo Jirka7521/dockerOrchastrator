@@ -116,7 +116,10 @@ orchestrator/
 │   ├── status_config.py          # StatusReporterConfig — the status_reporter section
 │   ├── request_signer.py         # RequestSigner — HMAC-SHA256, shared with the API
 │   ├── status_api_client.py      # StatusApiClient — signed HTTP, no proxies
-│   ├── command_executor.py       # CommandExecutor — validates the one command (logs)
+│   ├── command_types.py          # the command types, and the default: logs only
+│   ├── command_executor.py       # CommandExecutor — validates every command from the API
+│   ├── container_control.py      # ContainerControl — docker start / stop / restart
+│   ├── power_control.py          # PowerControl — systemctl reboot / poweroff, after the answer
 │   ├── failure_log_throttle.py   # FailureLogThrottle — one warning per outage, not 240
 │   ├── host_paths.py             # HostPaths — /proc and /sys roots (fakeable)
 │   ├── status_reporter.py        # StatusReporter — one thread per channel
@@ -296,16 +299,37 @@ dashboard API, on threads of its own beside the schedule:
 The temperature sensor is not checked from here: the dashboard API watches it
 on its MQTT broker itself.
 
-It also long-polls the API for log requests and answers them with
-`docker logs`. That is the only command that exists.
+It also long-polls the API for the dashboard's requests. By default the only
+one it runs is reading a container's log (`docker logs`). The host's owner can
+allow more in `allowed_commands`:
 
-**Security model.** Every connection is outbound from this root process; it
-opens no port. Every request is signed (HMAC-SHA256 over method, target, body,
-timestamp and a single-use nonce), and command responses must carry the API's
-signature bound to the request's nonce, or they are ignored. A log command is
-checked against this process's own container list and a strict name pattern,
-and runs `docker logs` with an argument list -- never a shell. Proxy environment
-variables are ignored. Protocol details: serverStatusPage `docs/AGENT_PROTOCOL.md`.
+| Command | Runs |
+| --- | --- |
+| `logs` | `docker logs --timestamps --tail <n> [--since <t>] <container>` |
+| `start`, `stop`, `restart` | `docker start/stop/restart <container>` |
+| `reboot`, `poweroff` | `systemctl reboot/poweroff` |
+
+**Security model.**
+
+- **Outbound only.** Every connection goes out from this root process; it
+  opens no port.
+- **Signed both ways.** Every request is signed with HMAC-SHA256 over the
+  method, target, body, timestamp and a single-use nonce. A command response
+  must carry the API's signature, bound to the request's nonce, or it is
+  ignored.
+- **This file decides what runs.** Each poll tells the API the allowed list,
+  so the API queues nothing else, and every command is checked against the
+  list again here. The API cannot change the list.
+- **Commands are checked.** A container must be in this process's own
+  container list and match a strict name pattern. Docker and systemctl run
+  with argument lists, never through a shell.
+- **The answer comes before the reboot.** A reboot or shutdown is answered
+  "accepted" first. It runs three seconds later, and only if the API took
+  that answer, meaning a dashboard request was still waiting for it.
+- **Logged.** Every request is logged with its outcome.
+- **No proxies.** Proxy environment variables are ignored.
+
+Protocol details: serverStatusPage `docs/AGENT_PROTOCOL.md`.
 
 ### Setup
 
@@ -363,10 +387,21 @@ from `vcgencmd`, with a sysfs fallback.
 | `vcgencmd_executable` | `"vcgencmd"` | |
 | `max_log_lines` | `5000` | Upper bound for one log request |
 | `max_log_bytes` | `2000000` | Size cap for one log result |
+| `allowed_commands` | `["logs"]` | What the dashboard may ask for: any of `logs`, `start`, `stop`, `restart`, `reboot`, `poweroff`. An empty list allows nothing |
+| `container_action_timeout_seconds` | `120` | Upper bound for one `docker start/stop/restart` (10–900) |
+| `systemctl_executable` | `"systemctl"` | Used for `reboot` and `poweroff` |
 
 When the API is unreachable, each channel logs its first failure, a reminder
 every ten minutes, and a line when it recovers -- not one warning per attempt.
-A config reload restarts the reporter only if its section changed.
+A config reload restarts the reporter only if its section changed; with
+`runtime.reload_config_on_change`, a new `allowed_commands` therefore applies
+without restarting the service.
+
+Container actions run on two worker threads, so a slow `docker stop` holds up
+neither log requests nor the reports. A finished action triggers a fresh
+container report at once. A reboot started from the dashboard stops this
+service like any other; a scheduled job that is running is finished first,
+within the unit's `TimeoutStopSec`.
 
 ---
 

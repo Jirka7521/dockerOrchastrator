@@ -24,6 +24,7 @@ class FakeApi(BaseHTTPRequestHandler):
     """Verifies every request the way the C# API does, and signs responses."""
 
     received: List[tuple] = []
+    polls: List[str] = []
     sign_responses = True
     commands: List[dict] = []
 
@@ -64,6 +65,7 @@ class FakeApi(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 - http.server naming
         if not self._verify(b""):
             return self._answer(401, b"")
+        FakeApi.polls.append(self.path)
         return self._answer(200, json.dumps({"commands": FakeApi.commands}).encode())
 
 
@@ -82,6 +84,7 @@ class StatusApiClientTests(unittest.TestCase):
 
     def setUp(self) -> None:
         FakeApi.received = []
+        FakeApi.polls = []
         FakeApi.sign_responses = True
         FakeApi.commands = []
         self.client = StatusApiClient(self.url, RequestSigner(KEY), timeout_seconds=5)
@@ -111,6 +114,16 @@ class StatusApiClientTests(unittest.TestCase):
         commands = self.client.poll_commands(0)
 
         self.assertEqual(FakeApi.commands, commands)
+
+    def test_the_poll_says_what_this_host_runs_inside_the_signed_target(self) -> None:
+        self.client.poll_commands(0, ("logs", "restart"))
+        self.client.poll_commands(0, ())
+
+        # The fake API checked both signatures over exactly these targets.
+        self.assertEqual(
+            ["/api/agent/v1/commands?wait=0&accept=logs,restart", "/api/agent/v1/commands?wait=0&accept=none"],
+            FakeApi.polls,
+        )
 
     def test_unsigned_commands_are_never_trusted(self) -> None:
         FakeApi.sign_responses = False

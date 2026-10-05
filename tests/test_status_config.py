@@ -54,6 +54,29 @@ class StatusConfigTests(unittest.TestCase):
         with self.assertRaises(ConfigError):
             StatusReporterConfig.from_dict({"enabled": True, "api_url": "http://api:8080"}, self.base)
 
+    def _enabled(self, **extra) -> StatusReporterConfig:
+        self._key_file()
+        section = {"enabled": True, "api_url": "http://192.168.130.2:8080", "shared_key_file": "agent.key", **extra}
+        return StatusReporterConfig.from_dict(section, self.base)
+
+    def test_only_logs_are_allowed_unless_listed(self) -> None:
+        self.assertEqual(("logs",), self._enabled().allowed_commands)
+        self.assertIn("allowed commands: logs", self._enabled().describe())
+
+    def test_allowed_commands_are_checked_and_kept_in_order(self) -> None:
+        config = self._enabled(allowed_commands=["restart", "logs", "restart", "reboot"])
+
+        self.assertEqual(("restart", "logs", "reboot"), config.allowed_commands)
+        self.assertEqual((), self._enabled(allowed_commands=[]).allowed_commands)
+        for bad in (["exec"], ["logs", "rm"], [None], "logs"):
+            with self.subTest(bad=bad), self.assertRaises(ConfigError):
+                self._enabled(allowed_commands=bad)
+
+    def test_container_actions_get_a_bounded_timeout(self) -> None:
+        self.assertEqual(120, self._enabled().container_action_timeout_seconds)
+        with self.assertRaises(ConfigError):
+            self._enabled(container_action_timeout_seconds=5)
+
     def test_urls_must_be_http(self) -> None:
         for url in ("ftp://api", "api:8080", "file:///etc/passwd", "http://"):
             with self.subTest(url=url), self.assertRaises(ConfigError):
