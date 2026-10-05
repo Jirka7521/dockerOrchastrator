@@ -311,7 +311,13 @@ class ContainerTests(unittest.TestCase):
                 "Health": {"Status": "unhealthy", "FailingStreak": 3, "Log": [{"Output": "  wget: connection refused  "}]},
             },
             "RestartCount": 2,
-            "Config": {"Image": "cloudflare/cloudflared:latest", "Labels": {"com.docker.compose.project": "cloudflare"}},
+            "Config": {
+                "Image": "cloudflare/cloudflared:latest",
+                "Labels": {
+                    "com.docker.compose.project": "cloudflare",
+                    "com.docker.compose.project.working_dir": "/mnt/externalSSD0/dockerScripts/cloudflare",
+                },
+            },
             "HostConfig": {"RestartPolicy": {"Name": "always"}},
             "NetworkSettings": {"Networks": {"claudflareTunnel": {"IPAddress": "192.168.122.50"}}},
         }
@@ -325,8 +331,23 @@ class ContainerTests(unittest.TestCase):
         self.assertEqual("wget: connection refused", container["healthLastOutput"])
         self.assertEqual("2026-09-28T09:18:25.276673Z", container["startedAt"])
         self.assertEqual("cloudflare", container["composeProject"])
+        self.assertEqual("/mnt/externalSSD0/dockerScripts/cloudflare", container["composeWorkingDir"])
         self.assertEqual([{"name": "claudflareTunnel", "ipAddress": "192.168.122.50"}], container["networks"])
         self.assertEqual("Exited (137) 4 days ago", container["status"])
+
+    def test_compose_folder_is_an_absolute_path_or_nothing(self) -> None:
+        self.assertEqual(
+            "/mnt/externalHDD0/dockerScripts/onedriveSync/CVUT",
+            ContainerCollector.working_dir("/mnt/externalHDD0/dockerScripts/onedriveSync/CVUT/"),
+        )
+        self.assertEqual("/", ContainerCollector.working_dir("/"))
+        self.assertIsNone(ContainerCollector.working_dir(None))
+        self.assertIsNone(ContainerCollector.working_dir("relative/folder"))
+        self.assertIsNone(ContainerCollector.working_dir("/srv/stack\nInjected: line"))
+        self.assertIsNone(ContainerCollector.working_dir("/" + "a" * 512))
+
+        plain = ContainerCollector.normalise({"Id": "a" * 64, "Name": "/plain", "State": {"Status": "running"}}, {})
+        self.assertIsNone(plain["composeWorkingDir"])
 
     def test_dockers_zero_time_means_never(self) -> None:
         self.assertIsNone(ContainerCollector.timestamp("0001-01-01T00:00:00Z"))

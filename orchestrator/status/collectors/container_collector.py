@@ -111,12 +111,29 @@ class ContainerCollector:
             "oomKilled": bool(state.get("OOMKilled")),
             "composeProject": (labels.get("com.docker.compose.project") or None),
             "composeService": (labels.get("com.docker.compose.service") or None),
+            # The folder `docker compose` ran in: the dashboard groups
+            # containers by the disk and folders it sits in.
+            "composeWorkingDir": ContainerCollector.working_dir(labels.get("com.docker.compose.project.working_dir")),
             "restartPolicy": ((host_config.get("RestartPolicy") or {}).get("Name") or None),
             "networks": [
                 {"name": name[:128], "ipAddress": (settings or {}).get("IPAddress") or None}
                 for name, settings in list(networks.items())[:16]
             ],
         }
+
+    @staticmethod
+    def working_dir(value: Any) -> str | None:
+        """An absolute path of at most 512 characters, or None.
+
+        A label is whatever the compose file's author wrote; a relative path,
+        an over-long one or one with control characters is dropped rather
+        than cut, since a shortened path would name a different folder.
+        """
+        if not isinstance(value, str) or not value.startswith("/") or len(value) > 512:
+            return None
+        if any(ord(char) < 32 or ord(char) == 127 for char in value):
+            return None
+        return value.rstrip("/") or "/"
 
     @staticmethod
     def timestamp(value: Any) -> str | None:

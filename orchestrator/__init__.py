@@ -27,7 +27,7 @@ from orchestrator.runtime.orchestrator_daemon import OrchestratorDaemon
 from orchestrator.runtime.orchestrator_factory import OrchestratorFactory
 from orchestrator.runtime.run_report import RunReport
 
-__version__ = "2.2.0"
+__version__ = "2.3.0"
 
 __all__ = [
     "AppConfig",

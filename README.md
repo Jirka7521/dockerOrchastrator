@@ -292,7 +292,7 @@ dashboard API, on threads of its own beside the schedule:
 | Channel | Every | What |
 | --- | --- | --- |
 | host | 15 s | CPU (total, per core, load, clock), memory, temperatures, Pi throttle flags, filesystems (resolved through LUKS/partitions to disks, ext4 error counters), disk I/O, every network interface with the Docker networks it carries |
-| containers | 10 s | `docker ps` + `docker inspect`: state, health, exit code, start/finish times, restarts. **No command lines or environments** -- they carry secrets |
+| containers | 10 s | `docker ps` + `docker inspect`: state, health, exit code, start/finish times, restarts, compose project and the folder it was started from. **No command lines or environments** -- they carry secrets |
 | connectivity | 30 s | `ping` to each target, a DNS probe |
 | disks | 10 min | `smartctl -a -n standby` per disk (a sleeping disk is not woken) |
 
