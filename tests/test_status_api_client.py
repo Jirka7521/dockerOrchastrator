@@ -27,6 +27,7 @@ class FakeApi(BaseHTTPRequestHandler):
     polls: List[str] = []
     sign_responses = True
     commands: List[dict] = []
+    redirect_to: str | None = None
 
     def log_message(self, format, *args):  # noqa: A002 - silence the test output
         pass
@@ -49,8 +50,19 @@ class FakeApi(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def _redirect(self) -> bool:
+        if FakeApi.redirect_to is None or self.path.startswith(FakeApi.redirect_to):
+            return False
+        self.send_response(302)
+        self.send_header("Location", FakeApi.redirect_to)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+        return True
+
     def do_POST(self) -> None:  # noqa: N802 - http.server naming
         body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        if self._redirect():
+            return None
         if not self._verify(body):
             return self._answer(401, b"")
         FakeApi.received.append((self.command, self.path, json.loads(body)))
@@ -63,6 +75,11 @@ class FakeApi(BaseHTTPRequestHandler):
     do_PUT = do_POST
 
     def do_GET(self) -> None:  # noqa: N802 - http.server naming
+        if self._redirect():
+            return None
+        if self.path.startswith("/elsewhere"):
+            FakeApi.received.append(("GET", self.path, None))
+            return self._answer(200, b'{"commands":[]}')
         if not self._verify(b""):
             return self._answer(401, b"")
         FakeApi.polls.append(self.path)
@@ -87,6 +104,7 @@ class StatusApiClientTests(unittest.TestCase):
         FakeApi.polls = []
         FakeApi.sign_responses = True
         FakeApi.commands = []
+        FakeApi.redirect_to = None
         self.client = StatusApiClient(self.url, RequestSigner(KEY), timeout_seconds=5)
 
     def test_reports_are_signed_and_accepted(self) -> None:
@@ -135,6 +153,19 @@ class StatusApiClientTests(unittest.TestCase):
     def test_results_for_abandoned_commands_are_not_an_error(self) -> None:
         self.assertTrue(self.client.send_command_result("b" * 32, {"ok": True, "lines": []}))
         self.assertFalse(self.client.send_command_result("unknown", {"ok": True, "lines": []}))
+
+    def test_redirects_are_never_followed(self) -> None:
+        FakeApi.redirect_to = "/elsewhere"
+
+        with self.assertRaises(StatusApiRejected) as poll:
+            self.client.poll_commands(0)
+        with self.assertRaises(StatusApiRejected) as report:
+            self.client.send_report("POST", "/host", {"hostname": "pi"})
+
+        self.assertEqual(302, poll.exception.status)
+        self.assertEqual(302, report.exception.status)
+        # Nothing reached the redirect target.
+        self.assertEqual([], FakeApi.received)
 
     def test_an_unreachable_api_raises_unavailable(self) -> None:
         client = StatusApiClient("http://127.0.0.1:9", RequestSigner(KEY), timeout_seconds=1)

@@ -428,6 +428,53 @@ WantedBy=multi-user.target
 
 `SIGTERM` is handled: the daemon finishes the current cycle and exits cleanly.
 
+#### Sandboxing
+
+The daemon has to run as root (the Docker socket, `smartctl` on the disks,
+`systemctl reboot`), but it needs very little else. A drop-in such as
+`/etc/systemd/system/docker-orchestrator.service.d/20-hardening.conf` takes
+`systemd-analyze security` from 9.6 (UNSAFE) down considerably:
+
+```ini
+[Service]
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+# The folder holding the config and the run-state file.
+ReadWritePaths=/opt/docker-orchestrator
+ReadWritePaths=-/root/.docker
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+KeyringMode=private
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@mount @swap @module @obsolete @debug @cpu-emulation
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+# smartctl ATA pass-through needs SYS_RAWIO, ping needs NET_RAW.
+CapabilityBoundingSet=CAP_SYS_RAWIO CAP_NET_RAW CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_CHOWN CAP_FOWNER CAP_KILL
+```
+
+Connecting to Unix sockets (`docker.sock`, systemd's private socket used by
+`systemctl reboot`) still works under `ProtectSystem=strict`. After
+`systemctl daemon-reload && systemctl restart docker-orchestrator`, check
+`journalctl -u docker-orchestrator` for `Permission denied` / `Operation not
+permitted`, and that the dashboard still shows disk health.
+
+Keep `allowed_commands` to what you use: `stop` lets a dashboard session take
+down any container (including the ones that give you remote access), while
+`reboot`/`poweroff` are needed if the UPS shutdown goes through the dashboard.
+
 ### Windows Task Scheduler
 
 Either run the daemon at logon:
