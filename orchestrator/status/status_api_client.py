@@ -41,12 +41,25 @@ class ApiResponse:
     nonce: str
 
 
+class _NoRedirects(urllib.request.HTTPRedirectHandler):
+    """Treat every 3xx as the final answer instead of following it.
+
+    The API never redirects. A redirect could only come from something else
+    answering on its address, and following it would send the signed request
+    -- and, for a report, host details -- wherever that points.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D102 - see class
+        return None
+
+
 class StatusApiClient:
     """Posts reports and polls for commands, every request signed.
 
     Proxy environment variables are deliberately ignored: the API sits on the
     LAN, and a stray ``http_proxy`` in a systemd environment would otherwise
     send signed requests -- and container logs -- through a third party.
+    Redirects are not followed, for the same reason.
     """
 
     def __init__(
@@ -61,7 +74,7 @@ class StatusApiClient:
         self._base_path = parts.path.rstrip("/") + "/api/agent/v1"
         self._signer = signer
         self._timeout = timeout_seconds
-        self._opener = opener or urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        self._opener = opener or urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirects())
         self._log = logging.getLogger(self.__class__.__name__)
 
     # ---------------------------------------------------------------- reports
